@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>PROTOCOL 2M - SHELL</title>
+   <!-- Incluindo Tailwind CSS para estilização rápida e minimalista -->
+   <script src="https://cdn.tailwindcss.com"></script>
+   <style>
+       /* OTIMIZAÇÃO MÓVEL: Garante que o corpo e o HTML cubram 100% da viewport */
+       html {
+           height: 100%;
+           /* Adicionado box-sizing para gerenciamento de padding/margin ser previsível */
+           box-sizing: border-box; 
+       }
+       *, *::before, *::after {
+           box-sizing: inherit;
+       }
+       
+       /* Estilos altamente minimalistas, imitando um terminal */
+       body {
+           background-color: #000000; /* Fundo Preto */
+           color: #ffffff; /* Texto Padrão Branco */
+           font-family: 'Monospace', 'Courier New', monospace; /* Fonte sem serifa para parecer terminal */
+           height: 100vh; /* Use 100vh para garantir a altura total na tela móvel */
+           margin: 0;
+           display: flex;
+           flex-direction: column;
+           overflow: hidden; /* Evita a barra de rolagem no corpo */
+           padding: 1rem;
+       }
+
+       /* Cores conforme solicitado */
+       .color-white { color: #ffffff; }
+       .color-green { color: #10B981; /* Tailwind emerald-500 */ }
+       .color-red { color: #EF4444; /* Tailwind red-500 */ }
+       .color-blue { color: #3B82F6; /* Tailwind blue-500 */ }
+       .color-yellow { color: #F59E0B; /* Tailwind amber-500 */ }
+       .color-orange { color: #F97316; /* Tailwind orange-500 */ }
+
+       #output {
+           flex-grow: 1;
+           overflow-y: auto;
+           /* Garantir min-height: 0 para que flex-grow funcione corretamente em alguns navegadores móveis */
+           min-height: 0; 
+           max-height: calc(100vh - 4rem); /* Altura máxima para a área de saída */
+           white-space: pre-wrap; /* Preserva formatação e quebra de linha */
+           padding-bottom: 1rem;
+       }
+
+       #input-line {
+           display: flex;
+           align-items: center;
+       }
+
+       #input-line input {
+           flex-grow: 1;
+           background: #000000;
+           border: none;
+           color: #ffffff;
+           outline: none;
+           padding: 0;
+           font-family: inherit;
+           font-size: inherit;
+       }
+   </style>
+</head>
+<body>
+
+   <!-- Área de Saída (Output) -->
+   <div id="output" class="text-sm md:text-base"></div>
+
+   <!-- Linha de Comando (Input) -->
+   <div id="input-line" class="text-sm md:text-base">
+       <span class="color-green mr-2">USER@PROTOCOL_SHELL:</span>
+       <input type="text" id="commandInput" autofocus onkeydown="handleInput(event)">
+   </div>
+
+   <script>
+       // Variáveis Globais (Estado do Jogo)
+       let balance = 1000.00; // Saldo inicial em Reais
+       let dangerLevel = 0; // Nível de Perigo (0-100)
+       let traceStatus = 0; // 0: None, 1: Low Trace, 2: High Trace
+       const WIN_TARGET = 2000000.00; // Meta Final: R$ 2 milhões
+       const TRANSITION_TARGET = 1000000.00; // Meta de Transição: R$ 1 milhão
+       const MAX_DANGER = 100;
+       
+       // --- Configurações de Progressão ---
+       const MAX_UPGRADE_LEVEL = 3; 
+       // Requisito de nível total para Fase 2 (Novo Requisito: Apenas 2 Níveis no total)
+       const TRANSITION_UPGRADE_TOTAL_LEVEL_REQ = 2;
+       const WIN_UPGRADE_LEVEL_REQ = MAX_UPGRADE_LEVEL; // Requisito de nível individual para a vitória
+       
+       // Níveis de Exploit necessários para desbloquear alvos
+       const CORP_UNLOCK_LEVEL = 1; 
+       const BANK_UNLOCK_LEVEL = 2; 
+
+       // --- Estado do Antagonista GUEST4829 ---
+       let guest4829_activated = false; // TRUE após cumprir a 1ª meta
+       let isNarrativePaused = false; // TRUE quando a mensagem de GUEST4829 está na tela
+       const NARRATIVE_PAUSE_SECONDS = 120; // 2 minutos de bloqueio
+
+       // --- Configurações de Custo/Risco ---
+       const TRACE_COST_BASE = 50000; 
+       const TRACE_TRIGGER_DANGER = 50;
+       const LAUNDERING_COST_PER_DANGER_POINT = 2000; 
+       const HACK_COOLDOWN_SECONDS = 3;
+       
+       // Variáveis de Módulos (Upgrades)
+       let lastHackTime = 0;
+       let upgrade = {
+           stealth: { level: 0, cost: 100000, max: MAX_UPGRADE_LEVEL, successBonus: 15, reduction: 0.8, name: "STEALTH CLOAK" }, 
+           exploit: { level: 0, cost: 150000, max: MAX_UPGRADE_LEVEL, successBonus: 3, name: "EXPLOIT DB" } 
+       };
+       
+       // --- Configurações do Sistema de Abrigos (Shelter) ---
+       let shelterLevel = 0; // Nível do Abrigo (0-3)
+       const SHELTER_CYCLE_SECONDS = 120; // 2 minutos
+       let shelterIntervalId = null; // ID para o timer de redução passiva
+
+       const SHELTER_DATA = { 
+           1: { cost: 250000, reduction: 0.01, name: "Bunker Subterrâneo" }, 
+           2: { cost: 750000, reduction: 0.03, name: "Penthouse Luxo" }, 
+           3: { cost: 1500000, reduction: 0.05, name: "Ilha Privada" }
+       };
+       
+       const outputDiv = document.getElementById('output');
+       const inputField = document.getElementById('commandInput');
+
+       // --- Funções de Ajuda ---
+
+       /**
+        * Calcula o total de níveis de upgrades investidos.
+        * @returns {number} O nível total combinado.
+        */
+       function getCurrentTotalUpgradeLevel() {
+           let total = 0;
+           for (const key in upgrade) {
+               total += upgrade[key].level;
+           }
+           return total;
+       }
+       
+       /**
+        * Checa se o nível atual de TODOS os upgrades atinge o requisito mínimo individual.
+        * @param {number} requiredLevel - O nível mínimo exigido.
+        * @returns {boolean} True se todos os módulos atingirem o nível, False caso contrário.
+        */
+       function checkIndividualUpgradeRequirements(requiredLevel) {
+           for (const key in upgrade) {
+               if (upgrade[key].level < requiredLevel) {
+                   return false;
+               }
+           }
+           return true;
+       }
+       
+       /**
+        * Checa se o nível atual TOTAL de upgrades atinge o requisito mínimo combinado.
+        * @param {number} requiredTotal - O nível total exigido.
+        * @returns {boolean} True se o total combinado for igual ou maior que o exigido.
+        */
+       function checkTotalUpgradeRequirements(requiredTotal) {
+           return getCurrentTotalUpgradeLevel() >= requiredTotal;
+       }
+
+       /**
+        * Determina a fase atual do jogo e retorna o multiplicador de dificuldade.
+        * @returns {number} Multiplicador de 1.0 ou 1.5.
+        */
+       function getPhaseMultiplier() {
+           // Fase 2: Saldo >= 1M E total de upgrades >= 2
+           if (balance >= TRANSITION_TARGET && checkTotalUpgradeRequirements(TRANSITION_UPGRADE_TOTAL_LEVEL_REQ)) {
+                return 1.5;
+           }
+           return 1.0; 
+       }
+
+       /**
+        * Adiciona uma linha formatada ao terminal.
+        * @param {string} text - O texto a ser exibido.
+        * @param {string} colorClass - A classe CSS de cor (e.g., 'color-green', 'color-red').
+        */
+       function print(text, colorClass = 'color-white') {
+           const line = document.createElement('div');
+           line.innerHTML = `<span class="${colorClass}">${text}</span>`;
+           outputDiv.appendChild(line);
+           // Rola automaticamente para o fim
+           outputDiv.scrollTop = outputDiv.scrollHeight;
+       }
+
+       /**
+        * Formata um valor numérico para a moeda brasileira (R$).
+        * @param {number} value - O valor a ser formatado.
+        * @returns {string} O valor formatado.
+        */
+       function formatCurrency(value) {
+           return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+       }
+
+       // --- Funções do Antagonista GUEST4829 e Abrigos ---
+
+       /**
+        * Executa o evento de introdução do GUEST4829 e pausa o jogo com um timer.
+        */
+       function activateGuest4829Event() {
+           isNarrativePaused = true;
+           inputField.disabled = true;
+           
+           // Inicia a contagem regressiva
+           const resumeTime = new Date(Date.now() + NARRATIVE_PAUSE_SECONDS * 1000);
+           const resumeTimeString = resumeTime.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+
+           print("================================================", 'color-red');
+           print("!!! ALERTA DE INTRUSÃO MÁXIMO: CANAL SEGURO COMPROMETIDO !!!", 'color-red');
+           print("... SINCRONIZAÇÃO FORÇADA DE TERMINAL...", 'color-red');
+           print("...", 'color-red');
+           
+           print(`GUEST4829: Parabéns, novato. Conseguir ${formatCurrency(TRANSITION_TARGET)} é impressionante. Devo admitir.`, 'color-orange');
+           print(`GUEST4829: Você passou despercebido pelos sistemas de baixo nível, mas agora você está na minha vizinhança.`, 'color-orange');
+           print(`GUEST4829: Estou tomando o controle da sua interface. Não vou te bloquear totalmente... ainda.`, 'color-orange');
+           print(`GUEST4829: Vou deixar seu dispositivo travado por ${NARRATIVE_PAUSE_SECONDS} segundos para mostrar quem tem controle total. O Terminal será liberado para digitação às ${resumeTimeString}.`, 'color-orange');
+           print(`GUEST4829: Se você continuar, garanto que vou garantir que o rastreio seja o menor dos seus problemas. Você está avisado.`, 'color-orange');
+           print("...", 'color-red');
+           print(`!!! CANAL ENCERRADO. COMANDO BLOQUEADO POR ${NARRATIVE_PAUSE_SECONDS} SEGUNDOS. !!!`, 'color-red');
+           print("================================================", 'color-red');
+
+           // Configura o timer para liberar o terminal
+           setTimeout(() => {
+               isNarrativePaused = false;
+               inputField.disabled = false;
+               inputField.focus();
+               print("================================================", 'color-red');
+               print(`!!! TEMPORIZADOR EXPIRADO. CONTROLE RESTAURADO. O SISTEMA DE GUEST4829 ESTÁ AGORA ATIVO. !!!`, 'color-red');
+               print("================================================", 'color-red');
+               checkGameState();
+           }, NARRATIVE_PAUSE_SECONDS * 1000);
+       }
+
+       /**
+        * Checa se o GUEST4829 injeta um rastreamento após um comando.
+        */
+       function checkGuest4829Injection() {
+           // Chance de 7% de injeção de rastreio
+           const INJECTION_CHANCE = 7; 
+           const roll = Math.floor(Math.random() * 100) + 1;
+
+           if (guest4829_activated && traceStatus === 0 && roll <= INJECTION_CHANCE) {
+               traceStatus = 1; // Injeta Rastreio Nível Baixo
+               print("================================================", 'color-red');
+               print("!!! ALERTA INTRUSÃO !!! Sinal anômalo detectado. Protocolo Hostil ativo.", 'color-red');
+               print("[GUEST4829 PROTOCOL] Rastreio de Nível BAIXO INJETADO. Execute 'obfuscate'.", 'color-orange');
+               print("================================================", 'color-red');
+           }
+       }
+       
+       /**
+        * Função chamada pelo timer para aplicar a redução passiva do Abrigo.
+        */
+       function applyShelterReduction() {
+           if (shelterLevel === 0 || dangerLevel === 0) return;
+           if (isNarrativePaused) return; // Não executa se o jogo estiver pausado pela narrativa
+
+           const shelterInfo = SHELTER_DATA[shelterLevel];
+           
+           // Redução é X% do Nível de Perigo ATUAL, arredondado para cima (mínimo 1%)
+           let reductionAmount = Math.ceil(dangerLevel * shelterInfo.reduction);
+           reductionAmount = Math.max(1, reductionAmount); 
+           
+           const newDanger = Math.max(0, dangerLevel - reductionAmount);
+           const actualReduction = dangerLevel - newDanger;
+           dangerLevel = newDanger;
+
+           print("================================================", 'color-green');
+           print(`[ABRIGO NÍVEL ${shelterLevel} - ${shelterInfo.name}] Segurança Automática.`, 'color-green');
+           print(`... Rastreio Dissolvido. Redução Passiva de -${actualReduction}% DANGER. (Ciclo: ${SHELTER_CYCLE_SECONDS}s)`, 'color-green');
+           print(`... PERIGO ATUAL: ${dangerLevel}%`, 'color-yellow');
+           print("================================================", 'color-green');
+
+           checkGameState();
+       }
+
+       // --- Funções do Jogo ---
+
+       /**
+        * Checa as condições de vitória ou derrota.
+        * @returns {boolean} True se o jogo terminou ou está em pausa, False caso contrário.
+        */
+       function checkGameState() {
+           // 1. Checagem de Derrota (Ser Pego)
+           if (dangerLevel > TRACE_TRIGGER_DANGER) {
+               const catchChance = Math.floor(Math.random() * 100);
+               let catchThreshold = dangerLevel - TRACE_TRIGGER_DANGER; 
+
+               if (catchChance < catchThreshold) {
+                   print("================================================", 'color-red');
+                   print("!!! ALERTA DE SEGURANÇA MÁXIMO: RASTREIO ATIVO !!!", 'color-red');
+                   print("ERRO 0x011B: Rastreamento concluído. Firewall falhou.", 'color-red');
+                   print(`REDE COMPROMETIDA. DANGER LEVEL: ${dangerLevel}%.`, 'color-red');
+                   print("ERRO FATAL: AS AUTORIDADES CHEGARAM. TERMINAL BLOQUEADO.", 'color-red');
+                   print("Game Over. Você foi pego.", 'color-white');
+                   inputField.disabled = true;
+                   if (shelterIntervalId) clearInterval(shelterIntervalId);
+                   return true;
+               }
+           }
+
+           // 2. Checagem de Vitória
+           if (balance >= WIN_TARGET) {
+               if (checkIndividualUpgradeRequirements(WIN_UPGRADE_LEVEL_REQ)) {
+                   // Vitória - Requisito Cumprido
+                   print("================================================", 'color-green');
+                   print(">>> [SUCCESS] META FINAL ATINGIDA E INFRAESTRUTURA COMPLETA.", 'color-green');
+                   print("PROTOCOL 2M CONCLUÍDO. VOCÊ DESAPARECEU.", 'color-green');
+                   print("Fim do Jogo.", 'color-white');
+                   inputField.disabled = true;
+                   if (shelterIntervalId) clearInterval(shelterIntervalId);
+                   return true;
+               } else {
+                   // Bloqueio de Vitória
+                   print("================================================", 'color-red');
+                   print("!!! ALERTA: META FINAL ATINGIDA, MAS REQUISITOS DE MÓDULO PENDENTES !!!", 'color-red');
+                   print(`A infraestrutura não está segura para o escape. Nível máximo (${WIN_UPGRADE_LEVEL_REQ}) em todos os upgrades é obrigatório.`, 'color-red');
+                   balance = WIN_TARGET; 
+                   return false;
+               }
+           }
+
+           // 3. Checagem de Transição (Fase 2)
+           const isTransitionReqMet = checkTotalUpgradeRequirements(TRANSITION_UPGRADE_TOTAL_LEVEL_REQ);
+
+           if (balance >= TRANSITION_TARGET) {
+               if (!isTransitionReqMet) {
+                   // Bloqueio de Transição
+                   print("================================================", 'color-orange');
+                   print("!!! ALERTA DE PROGRESSÃO: META DE TRANSIÇÃO ATINGIDA !!!", 'color-orange');
+                   print(`REQUISITO PENDENTE: Nível TOTAL de upgrades deve ser ${TRANSITION_UPGRADE_TOTAL_LEVEL_REQ} para ativar a Infraestrutura de Alto Valor.`, 'color-red');
+                   balance = TRANSITION_TARGET; 
+               } else if (!guest4829_activated) {
+                   // PRIMEIRA VEZ: Ativa GUEST4829 e narrativa.
+                   guest4829_activated = true;
+                   activateGuest4829Event();
+                   return true; // Pausa o processamento de comandos
+               } 
+           }
+
+           return isNarrativePaused;
+       }
+
+       /**
+        * Exibe a lista de comandos.
+        */
+       function showHelp() {
+           print("================================================", 'color-blue');
+           print("Lista de Comandos [PROTOCOL 2M]:", 'color-blue');
+           print(" - status    : Exibe o saldo [BRL], a Meta e o Nível de Perigo [DANGER/TRACE/ABRIGO].", 'color-white');
+           print(" - hack <alvo> : Tenta uma invasão (crypto, corp, bank). COOLDOWN de 3s. *Apenas 'crypto' disponível inicialmente.*", 'color-yellow');
+           print(` - laundering <valor> : 'Lava' o dinheiro para reduzir o Perigo (1% DANGER a cada ${formatCurrency(LAUNDERING_COST_PER_DANGER_POINT)}).`, 'color-white'); 
+           print(" - upgrade <modulo> : Investe em melhorias permanentes (stealth, exploit). Use 'upgrade' para ver detalhes.", 'color-yellow');
+           print(" - buy shelter <nível> : Compra ou faz UPGRADE de um Abrigo (1, 2, 3) para redução de perigo PASSIVA. Use 'shelter' para ver detalhes.", 'color-orange');
+           print(" - shelter   : Exibe os detalhes e custos dos Abrigos.", 'color-orange');
+           print(" - obfuscate : Tenta limpar um Rastreamento de Emergência (TRACE) ativo.", 'color-orange');
+           print(" - clear     : Limpa a tela do terminal.", 'color-white');
+           print(" - help      : Exibe esta lista de comandos.", 'color-white');
+           print(" - exit      : Encerra a sessão.", 'color-white');
+           print("================================================", 'color-blue');
+       }
+
+       /**
+        * Exibe informações detalhadas sobre os módulos de upgrade e abrigos.
+        */
+       function showUpgradeInfo() {
+           print("================================================", 'color-blue');
+           print("MÓDULOS DE UPGRADE & ABRIGOS (INFRAESTRUTURA):", 'color-blue');
+           print("------------------------------------------------", 'color-white');
+
+           // --- Módulos (Stealth/Exploit) ---
+           print("MÓDULOS PERMANENTES:", 'color-yellow');
+           for (const key in upgrade) {
+               const module = upgrade[key];
+               const nextCost = (module.level < module.max) ? Math.floor(module.cost * Math.pow(2, module.level)) : null;
+               const bonus = module.level * module.successBonus;
+               let description = "";
+
+               if (key === 'stealth') {
+                   const currentReductionFactor = (1 - Math.pow(module.reduction, module.level));
+                   const currentReductionPercentage = (currentReductionFactor * 100).toFixed(1);
+                   description = `Reduz o aumento de DANGER (${currentReductionPercentage}%) e aumenta a chance de Obfuscate (+${bonus}%).`;
+               } else if (key === 'exploit') {
+                   description = `Melhora a chance de sucesso em Hacks (+${bonus}%). Desbloqueia 'corp' no Nível ${CORP_UNLOCK_LEVEL} e 'bank' no Nível ${BANK_UNLOCK_LEVEL}.`;
+               }
+
+               print(`[${module.name}] - Nível ${module.level}/${module.max}`, 'color-white');
+               print(`   Função: ${description}`, 'color-white');
+               if (nextCost !== null) {
+                   print(`   Próx. Custo: ${formatCurrency(nextCost)}`, 'color-green');
+               } else {
+                   print("   STATUS: Nível Máximo Alcançado.", 'color-green');
+               }
+           }
+
+           // --- Abrigo (Shelter) ---
+           print("------------------------------------------------", 'color-white');
+           print("ABRIGO (REDUÇÃO PASSIVA DE DANGER - Comando: buy shelter <nível>)", 'color-yellow');
+           print(`   Nível Atual: ${shelterLevel}`, 'color-white');
+
+           for (let i = 1; i <= 3; i++) {
+               const info = SHELTER_DATA[i];
+               let costToBuy = info.cost;
+
+               // Calcula o custo incremental para upgrade
+               if (i > shelterLevel) {
+                   const previousCost = SHELTER_DATA[i - 1]?.cost || 0;
+                   costToBuy = info.cost - (SHELTER_DATA[shelterLevel]?.cost || 0); // Custo incremental baseado no nível atual
+                   costToBuy = Math.max(0, costToBuy); // Garante que o custo não seja negativo
+               } else if (i === shelterLevel) {
+                   costToBuy = 0;
+               }
+
+               const status = (i <= shelterLevel) 
+                   ? 'ADQUIRIDO' 
+                   : `CUSTO PARA UPGRADE: ${formatCurrency(costToBuy)}`;
+               
+               const statusColor = (i < shelterLevel || i === 3 && i === shelterLevel) ? 'color-green' : 'color-orange';
+               
+               print(`[Nível ${i} - ${info.name}]`, 'color-white');
+               print(`   Efeito: Redução PASSIVA de ${info.reduction * 100}% DANGER a cada 120s.`, 'color-white');
+               if (i > shelterLevel) {
+                    print(`   Custo Total (Base): ${formatCurrency(info.cost)} | Custo UPGRADE: ${formatCurrency(costToBuy)}`, statusColor);
+               } else {
+                    print(`   STATUS: ADQUIRIDO (Investimento Total: ${formatCurrency(info.cost)})`, statusColor);
+               }
+           }
+
+           // --- Requisitos de Meta ---
+           print("------------------------------------------------", 'color-white');
+           print("REQUISITOS DE PROGRESSÃO:", 'color-blue');
+           
+           const transitionReqStatus = checkTotalUpgradeRequirements(TRANSITION_UPGRADE_TOTAL_LEVEL_REQ);
+           print(`[PRIMEIRA META (${formatCurrency(TRANSITION_TARGET)})]: Nível TOTAL de upgrades >= ${TRANSITION_UPGRADE_TOTAL_LEVEL_REQ}.`, transitionReqStatus ? 'color-green' : 'color-red');
+           
+           const winReqStatus = checkIndividualUpgradeRequirements(WIN_UPGRADE_LEVEL_REQ);
+           print(`[META FINAL (${formatCurrency(WIN_TARGET)})]: Nível MÁXIMO (${WIN_UPGRADE_LEVEL_REQ}) em TODOS os módulos.`, winReqStatus ? 'color-green' : 'color-red');
+           
+           print("================================================", 'color-blue');
+       }
+
+       /**
+        * Processa o comando 'status'.
+        */
+       function processStatus() {
+           const currentPhaseMultiplier = getPhaseMultiplier();
+           const phaseStatusText = currentPhaseMultiplier === 1.5 
+               ? "INFRAESTRUTURA DE ALTO VALOR (RISCO: 1.5x)" 
+               : "INFRAESTRUTURA DE BAIXO VALOR (RISCO: 1.0x)";
+
+           print("================================================", 'color-blue');
+           print("STATUS DE CONTA - [2M.protocol.runtime]:", 'color-blue');
+           print(`SALDO [BRL]: ${formatCurrency(balance)}`, 'color-white');
+           print(`PROGRESSO: ${phaseStatusText}`, currentPhaseMultiplier === 1.5 ? 'color-red' : 'color-yellow');
+           
+           // Exibir Trace Status
+           let traceText, traceColor;
+           if (traceStatus === 2) {
+               traceText = "TRACE: ALTO (CRÍTICO)";
+               traceColor = 'color-red';
+           } else if (traceStatus === 1) {
+               traceText = "TRACE: BAIXO (ATIVO)";
+               traceColor = 'color-orange';
+           } else {
+               traceText = "TRACE: INATIVO (LIMPO)";
+               traceColor = 'color-green';
+           }
+           print(`STATUS DE RASTREIO: ${traceText}`, traceColor);
+           
+           print(`PERIGO [DANGER]: ${dangerLevel}%`, dangerLevel > 70 ? 'color-red' : dangerLevel > 40 ? 'color-yellow' : 'color-green');
+           
+           // Exibir Abrigo Status
+           let shelterStatusText;
+           if (shelterLevel > 0) {
+               const info = SHELTER_DATA[shelterLevel];
+               shelterStatusText = `ABRIGO ATIVO: Nível ${shelterLevel} (${info.name}). Redução: ${info.reduction * 100}% a cada 120s.`;
+           } else {
+               shelterStatusText = "ABRIGO: Nenhum. Risco de acúmulo de DANGER.";
+           }
+           print(`SEGURANÇA PASSIVA: ${shelterStatusText}`, shelterLevel > 0 ? 'color-green' : 'color-yellow');
+
+           // Exibir Metas
+           print("--- METAS ---", 'color-blue');
+           const nextTarget = balance < TRANSITION_TARGET ? TRANSITION_TARGET : WIN_TARGET;
+           print(`PRÓXIMO OBJETIVO: ${formatCurrency(nextTarget)}`, 'color-yellow');
+
+           if (guest4829_activated) {
+               print(`ATENÇÃO: ANTAGONISTA [GUEST4829] ATIVO. Ameaça de Rastreio Injetado: 7%.`, 'color-red');
+           }
+           
+           print("================================================", 'color-blue');
+       }
+
+       /**
+        * Processa o comando 'hack <alvo>'.
+        * @param {string[]} args - Argumentos do comando (o alvo).
+        */
+       function processHack(args) {
+           if (traceStatus > 0) {
+               print("ERRO 0x00A1: OPERAÇÃO BLOQUEADA. Trace Event ativo. Execute 'obfuscate' primeiro.", 'color-red');
+               return;
+           }
+
+           const target = args[0];
+           const currentTime = Date.now();
+           const timeElapsed = (currentTime - lastHackTime) / 1000;
+
+           if (timeElapsed < HACK_COOLDOWN_SECONDS) {
+               const remaining = Math.ceil(HACK_COOLDOWN_SECONDS - timeElapsed);
+               print(`AVISO: Módulo 'intrusion_v2.1' em COOLDOWN. Aguarde ${remaining} segundos.`, 'color-yellow');
+               return;
+           }
+           
+           if (!target) {
+               print("ERRO 0x001A: Comando 'hack' requer um alvo. Tente: hack <alvo>", 'color-red');
+               print("Alvos disponíveis: crypto, corp, bank.", 'color-white');
+               return;
+           }
+           
+           const isCorpUnlocked = upgrade.exploit.level >= CORP_UNLOCK_LEVEL;
+           const isBankUnlocked = upgrade.exploit.level >= BANK_UNLOCK_LEVEL;
+
+           if (target === 'corp' && !isCorpUnlocked) {
+               print(`ERRO 0x001C: ALVO BLOQUEADO. Acesso ao alvo 'corp' requer EXPLOIT DB Nível ${CORP_UNLOCK_LEVEL}.`, 'color-red');
+               return;
+           }
+           if (target === 'bank' && !isBankUnlocked) {
+               print(`ERRO 0x001C: ALVO BLOQUEADO. Acesso ao alvo 'bank' requer EXPLOIT DB Nível ${BANK_UNLOCK_LEVEL}.`, 'color-red');
+               return;
+           }
+
+           const targets = {
+               'bank': { risk: 30, gainMin: 80000, gainMax: 200000, danger: 15 },
+               'corp': { risk: 20, gainMin: 30000, gainMax: 80000, danger: 8 },
+               'crypto': { risk: 10, gainMin: 5000, gainMax: 20000, danger: 3 }
+           };
+
+           const selectedTarget = targets[target];
+
+           if (!selectedTarget) {
+               print(`ERRO 0x001B: Alvo '${target}' não reconhecido.`, 'color-red');
+               print(`Alvos disponíveis: crypto${isCorpUnlocked ? ', corp' : ''}${isBankUnlocked ? ', bank' : ''}.`, 'color-white');
+               return;
+           }
+
+           lastHackTime = currentTime; 
+           const phaseMultiplier = getPhaseMultiplier(); 
+
+           print(`> [PYTHON SCRIPT] Executando 'intrusion_v2.1' contra ${target.toUpperCase()} (FATOR x${phaseMultiplier.toFixed(1)})...`, 'color-blue');
+
+           const exploitBonus = upgrade.exploit.level * upgrade.exploit.successBonus;
+           const baseSuccess = 100 - selectedTarget.risk;
+           const finalSuccess = baseSuccess - Math.floor(dangerLevel / 5) + exploitBonus; 
+           const roll = Math.floor(Math.random() * 100) + 1;
+
+           if (roll < finalSuccess) {
+               // SUCESSO
+               let gain = Math.floor(Math.random() * (selectedTarget.gainMax - selectedTarget.gainMin)) + selectedTarget.gainMin;
+               gain = Math.floor(gain * phaseMultiplier);
+
+               const initialDanger = selectedTarget.danger;
+               const stealthFactor = Math.pow(upgrade.stealth.reduction, upgrade.stealth.level);
+               let actualDangerIncrease = Math.floor(initialDanger * stealthFactor * phaseMultiplier);
+               actualDangerIncrease = Math.max(1, actualDangerIncrease); 
+
+               balance += gain;
+               dangerLevel = Math.min(MAX_DANGER, dangerLevel + actualDangerIncrease);
+               
+               print(`...[200 OK] Transferência concluída. +${formatCurrency(gain)} adicionado.`, 'color-green');
+               print(`...RISCO AJUSTADO: +${actualDangerIncrease} DANGER. (Infraestrutura x${phaseMultiplier.toFixed(1)})`, 'color-yellow');
+           } else {
+               // FALHA
+               let actualDangerIncrease = Math.max(1, Math.ceil(selectedTarget.danger / 2) * phaseMultiplier); 
+               actualDangerIncrease = Math.max(1, Math.floor(actualDangerIncrease));
+
+               dangerLevel = Math.min(MAX_DANGER, dangerLevel + actualDangerIncrease);
+               
+               print(`...[403 FORBIDDEN] Intrusion Detectada.`, 'color-red');
+               print("...ERRO 0x00A3: Nenhuma transação efetuada.", 'color-red');
+               print(`...ALERTA: PING de Rastreamento Recebido (+${actualDangerIncrease} DANGER).`, 'color-yellow');
+
+               // CHANCE DE TRACE EVENT APÓS FALHA
+               if (dangerLevel >= TRACE_TRIGGER_DANGER) {
+                   const traceRoll = Math.random();
+                   if (traceRoll > 0.6) { 
+                       traceStatus = 1;
+                       print("!!! ALERTA TRACE EVENT !!! RASTREIO DETECTADO (NÍVEL BAIXO). EXECUTE 'obfuscate'.", 'color-orange');
+                   } else if (traceRoll > 0.9) { 
+                       traceStatus = 2;
+                       print("!!! ALARME CRÍTICO !!! RASTREIO MASSIVO (NÍVEL ALTO).", 'color-red');
+                   }
+               }
+           }
+       }
+
+       /**
+        * Processa o comando 'laundering <valor>'.
+        * @param {string[]} args - Argumentos do comando (o valor).
+        */
+       function processLaundering(args) {
+           if (traceStatus > 0) {
+               print("ERRO 0x00A1: OPERAÇÃO BLOQUEADA. Trace Event ativo. Execute 'obfuscate' primeiro.", 'color-red');
+               return;
+           }
+
+           const rawInput = args[0];
+
+           if (!rawInput) {
+               print("ERRO 0x002C: Comando 'laundering' requer um valor. Sintaxe: laundering <valor>.", 'color-red');
+               return;
+           }
+           
+           // Normalização de Entrada Numérica (suporta . e ,)
+           let cleanInput = rawInput.trim();
+           cleanInput = cleanInput.replace(/\./g, ''); 
+           cleanInput = cleanInput.replace(/,/g, '.');
+
+           const amount = parseFloat(cleanInput);
+           const roundingFactor = LAUNDERING_COST_PER_DANGER_POINT;
+           const roundedAmount = Math.floor(amount / roundingFactor) * roundingFactor;
+           const cost = roundedAmount;
+
+           if (isNaN(amount) || amount <= 0) {
+               print("ERRO 0x002C: Valor inválido para lavagem. Use apenas números.", 'color-red');
+               return;
+           }
+
+           if (cost <= 0) {
+               print(`AVISO: O valor deve ser pelo menos ${formatCurrency(roundingFactor)} para ter efeito (1% DANGER).`, 'color-yellow');
+               return;
+           }
+
+           if (cost > balance) {
+               print("ERRO 0x002D: Saldo insuficiente. Requer: " + formatCurrency(cost) + " (arredondado).", 'color-red');
+               return;
+           }
+           
+           // CÁLCULO: 1% de redução a cada R$2.000 investidos.
+           const maxReduction = Math.floor(cost / LAUNDERING_COST_PER_DANGER_POINT); 
+           const reduction = Math.min(dangerLevel, Math.max(0, maxReduction));
+
+           if (reduction <= 0) {
+               print("AVISO: Valor muito baixo para reduzir o Nível de Perigo.", 'color-yellow');
+               return;
+           }
+
+           balance -= cost;
+           dangerLevel = Math.max(0, dangerLevel - reduction);
+
+           print(`> [PYTHON SCRIPT] Executando 'trace_cleaner_v3.0' com ${formatCurrency(cost)}...`, 'color-blue');
+           print(`...[202 ACCEPTED] ${formatCurrency(cost)} deduzido. REDUÇÃO DE PERIGO: -${reduction}% DANGER.`, 'color-green');
+           print(`...PERIGO ATUAL: ${dangerLevel}%`, 'color-yellow');
+       }
+       
+       /**
+        * Processa o comando 'upgrade <modulo>'.
+        * @param {string[]} args - Argumentos do comando (o modulo).
+        */
+       function processUpgrade(args) {
+           if (traceStatus > 0) {
+               print("ERRO 0x00A1: OPERAÇÃO BLOQUEADA. Trace Event ativo. Execute 'obfuscate' primeiro.", 'color-red');
+               return;
+           }
+
+           const moduleName = args[0];
+           const module = upgrade[moduleName];
+
+           if (!module) {
+               print("ERRO 0x003A: Módulo de upgrade não reconhecido. Use: stealth ou exploit.", 'color-red');
+               return;
+           }
+
+           if (module.level >= module.max) {
+               print(`AVISO: Módulo ${module.name} já está no nível máximo (${module.max}).`, 'color-yellow');
+               return;
+           }
+           
+           const cost = Math.floor(module.cost * Math.pow(2, module.level));
+
+           if (balance < cost) {
+               print(`ERRO 0x003B: Saldo insuficiente. Requer ${formatCurrency(cost)} para o próximo nível.`, 'color-red');
+               return;
+           }
+
+           balance -= cost;
+           module.level += 1;
+           
+           print(`> [SYSTEM] Instalando UPGRADE ${module.name} - Nível ${module.level}...`, 'color-blue');
+           print(`...[200 OK] ${formatCurrency(cost)} deduzido. Módulo atualizado.`, 'color-green');
+           
+           if (moduleName === 'exploit') {
+               if (module.level === CORP_UNLOCK_LEVEL) {
+                   print(`!!! NOVO ALVO DESBLOQUEADO !!! Alvo 'corp' agora está acessível para hack (Exploit Nível ${CORP_UNLOCK_LEVEL}).`, 'color-green');
+               } else if (module.level === BANK_UNLOCK_LEVEL) {
+                   print(`!!! NOVO ALVO DESBLOQUEADO !!! Alvo 'bank' agora está acessível para hack (Exploit Nível ${BANK_UNLOCK_LEVEL}).`, 'color-green');
+               }
+           }
+       }
+       
+       /**
+        * Processa o comando 'buy shelter <nível>'.
+        * @param {string[]} args - Argumentos do comando (o nível).
+        */
+       function processShelterUpgrade(args) {
+           if (traceStatus > 0) {
+               print("ERRO 0x00A1: OPERAÇÃO BLOQUEADA. Trace Event ativo. Execute 'obfuscate' primeiro.", 'color-red');
+               return;
+           }
+           
+           const desiredLevel = parseInt(args[0]);
+
+           if (isNaN(desiredLevel) || desiredLevel < 1 || desiredLevel > 3) {
+               // Se o usuário digitou "buy shelter" sem nível, mostra info
+               showUpgradeInfo();
+               return; 
+           }
+
+           if (desiredLevel <= shelterLevel) {
+               print(`AVISO: Você já possui o Abrigo Nível ${shelterLevel} ou superior.`, 'color-yellow');
+               return;
+           }
+
+           const info = SHELTER_DATA[desiredLevel];
+           let cost = info.cost;
+
+           // Calcula o custo incremental para upgrade
+           const currentShelterCost = SHELTER_DATA[shelterLevel]?.cost || 0;
+           cost = info.cost - currentShelterCost;
+
+           if (balance < cost) {
+               print(`ERRO 0x00D3: Saldo insuficiente. Custo para Abrigo Nível ${desiredLevel} é de ${formatCurrency(cost)}.`, 'color-red');
+               print(`... Use 'shelter' para ver a tabela de custos detalhada.`, 'color-red');
+               return;
+           }
+
+           balance -= cost;
+           shelterLevel = desiredLevel;
+
+           print(`> [SYSTEM] COMPRA CONCLUÍDA: ${info.name} (Nível ${shelterLevel}).`, 'color-blue');
+           print(`...[200 OK] ${formatCurrency(cost)} deduzido.`, 'color-green');
+           print(`...Redução PASSIVA de DANGER de ${info.reduction * 100}% ativada. (Ciclo: 120 segundos)`, 'color-green');
+           print(`...Próxima redução automática em 2 minutos.`, 'color-yellow');
+           
+           // Re-inicia o timer para garantir que comece a contar a partir do novo nível
+           if (shelterIntervalId) { clearInterval(shelterIntervalId); }
+           shelterIntervalId = setInterval(applyShelterReduction, SHELTER_CYCLE_SECONDS * 1000);
+       }
+
+       /**
+        * Processa o comando 'obfuscate'.
+        */
+       function processObfuscate() {
+           if (traceStatus === 0) {
+               print("AVISO: Nenhum Trace Event ativo. Comando 'obfuscate' desnecessário.", 'color-yellow');
+               return;
+           }
+
+           const cost = TRACE_COST_BASE * traceStatus; 
+           
+           if (balance < cost) {
+               print(`ERRO 0x00A2: Saldo insuficiente. Requer ${formatCurrency(cost)} para iniciar o módulo 'obfuscate'.`, 'color-red');
+               return;
+           }
+
+           const stealthBonus = upgrade.stealth.level * upgrade.stealth.successBonus;
+           const tracePenalty = traceStatus * 10;
+           const finalSuccessChance = 70 - tracePenalty + stealthBonus; 
+           const roll = Math.floor(Math.random() * 100) + 1;
+
+           print(`> [SECURITY] Executando 'obfuscate_v1.0' (Custo: ${formatCurrency(cost)}, Chance: ${finalSuccessChance}%)...`, 'color-blue');
+           balance -= cost;
+
+           if (roll < finalSuccessChance) {
+               traceStatus = 0;
+               dangerLevel = Math.max(0, dangerLevel - 5); 
+               print("...[200 OK] VETOR DE RASTREIO NEUTRALIZADO. TRACE LIMPO.", 'color-green');
+               print("...PERIGO REDUZIDO EM 5%.", 'color-yellow');
+           } else {
+               const dangerIncrease = traceStatus * 15;
+               dangerLevel = Math.min(MAX_DANGER, dangerLevel + dangerIncrease);
+               
+               print("...[500 SERVER ERROR] Falha na injeção de dados. O rastro ficou mais forte.", 'color-red');
+               print(`...AVISO: O RASTREIO CONTINUA ATIVO! DANGER LEVEL: +${dangerIncrease}%.`, 'color-red');
+               
+               if (traceStatus === 1) {
+                   traceStatus = 2;
+                   print("...INTENSIDADE DO TRACE AUMENTADA PARA CRÍTICA!", 'color-red');
+               }
+           }
+       }
+
+       /**
+        * Processa a entrada do usuário e executa os comandos.
+        * @param {string} input - A string de comando.
+        */
+       function processCommand(input) {
+           try {
+               const parts = input.trim().toLowerCase().split(/\s+/);
+               const command = parts[0];
+               const args = parts.slice(1);
+
+               if (command === '') return;
+
+               // Echo do comando
+               print(`USER@PROTOCOL_SHELL: ${input}`, 'color-white'); 
+               
+               // Checagem de estado principal e pausa narrativa (GUEST4829)
+               if (isNarrativePaused) return; 
+               if (inputField.disabled) return; 
+               
+               // A checagem de estado deve vir antes dos comandos para pausar o jogo.
+               if (checkGameState()) return; 
+
+               // NOVO: Chance de GUEST4829 injetar um rastreio após QUALQUER comando na Fase 2.
+               if (getPhaseMultiplier() === 1.5) {
+                   checkGuest4829Injection(); 
+               }
+
+               switch (command) {
+                   case 'help':
+                       showHelp();
+                       break;
+                   case 'status':
+                       processStatus();
+                       break;
+                   case 'hack':
+                       processHack(args);
+                       break;
+                   case 'laundering':
+                       processLaundering(args);
+                       break;
+                   case 'upgrade':
+                       if (args.length === 0) {
+                           showUpgradeInfo(); 
+                       } else {
+                           processUpgrade(args); 
+                       }
+                       break;
+                   case 'shelter': // Comando "shelter" para mostrar info
+                       showUpgradeInfo();
+                       break;
+                   case 'buy':
+                       if (args[0] === 'shelter') {
+                           processShelterUpgrade(args.slice(1));
+                       } else {
+                           print("ERRO 0x00D1: Comando 'buy' não reconhecido ou sintaxe inválida. Tente: buy shelter <nível>.", 'color-red');
+                       }
+                       break;
+                   case 'obfuscate': 
+                       processObfuscate();
+                       break;
+                   case 'clear':
+                       outputDiv.innerHTML = '';
+                       printInitialMessage();
+                       break;
+                   case 'exit':
+                       print("...Sessão Encerrada pelo Usuário (Exit Code 0).", 'color-blue');
+                       inputField.disabled = true;
+                       if (shelterIntervalId) clearInterval(shelterIntervalId);
+                       break;
+                   default:
+                       print(`ERRO 0x0001: Comando não reconhecido: ${command}. Digite 'help'.`, 'color-red');
+                       break;
+               }
+
+               checkGameState(); 
+           } catch (error) {
+               print("!!! ERRO CRÍTICO INESPERADO !!! 0xDEADBEEF", 'color-red');
+               print(`[SYSTEM LOG]: ${error.message}.`, 'color-red'); 
+               console.error("Critical error processing command:", error); 
+           }
+       }
+
+       /**
+        * Manipulador de evento de teclado para o campo de entrada.
+        */
+       function handleInput(event) {
+           if (event.key === 'Enter') {
+               if (isNarrativePaused) {
+                   // Quando em pausa por GUEST4829, Enter é ignorado ou apenas confirma o texto
+                   print("AVISO: COMANDO DE ENTRADA BLOQUEADO. Aguarde o término da suspensão pelo GUEST4829.", 'color-red');
+                   inputField.value = ''; // Limpa o que o usuário tentou digitar
+                   return; 
+               }
+               
+               const command = inputField.value;
+               inputField.value = ''; 
+               processCommand(command);
+           }
+       }
+
+       /**
+        * Mensagem inicial do terminal, imitando um script de inicialização.
+        */
+       function printInitialMessage() {
+           print("================================================", 'color-blue');
+           print(`>>> [BOOT_START] ${new Date().toISOString()}`, 'color-blue');
+           print("... 0x01: MEMORY_ALLOC = OK", 'color-green');
+           print("... 0x02: NETWORK_PING = 78.12.3.99 [SECURE]", 'color-green');
+           print(">>> [PROTOCOL 2M] VERSION 5.1 (PROGRESSÃO AJUSTADA)", 'color-yellow');
+           print("---", 'color-white');
+           print(">>> [PAYLOAD_INIT] CARREGANDO MÓDULOS DE INTRUSÃO...", 'color-blue');
+           
+           print(`... PRIMEIRA META (TRANSIÇÃO): ${formatCurrency(TRANSITION_TARGET)} (Requer Nível TOTAL de Upgrades Lv. ${TRANSITION_UPGRADE_TOTAL_LEVEL_REQ})`, 'color-yellow');
+           print(`... META FINAL (VITÓRIA): ${formatCurrency(WIN_TARGET)} (Requer Upgrades Lv. ${WIN_UPGRADE_LEVEL_REQ} em tudo)`, 'color-yellow');
+
+           print(`... COMANDOS ESSENCIAIS: 'hack crypto', 'laundering <valor>', 'obfuscate'.`, 'color-orange'); 
+           print(`... NOVO: Invista em segurança passiva: 'buy shelter 1' (use 'shelter' para ver a tabela).`, 'color-orange'); 
+           print(`!!! ATENÇÃO: Apenas o alvo 'crypto' está disponível inicialmente. Alvos 'corp' e 'bank' exigem upgrade 'exploit'.`, 'color-red');
+
+           print("---", 'color-white');
+           print("INICIALIZAÇÃO CONCLUÍDA. DIGITE 'help' PARA COMANDOS.", 'color-white');
+           print("================================================", 'color-blue');
+
+           // Inicia ou re-inicia o timer de redução de perigo a cada 2 minutos
+           if (shelterIntervalId) { clearInterval(shelterIntervalId); }
+           shelterIntervalId = setInterval(applyShelterReduction, SHELTER_CYCLE_SECONDS * 1000);
+       }
+
+       // --- Inicialização ---
+       window.onload = printInitialMessage;
+       
+   </script>
+
+</body>
+</html>
